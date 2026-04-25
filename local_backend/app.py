@@ -987,17 +987,23 @@ def build_chat_context(current_bin, fleet_bins, analytics_summary_payload, selec
                 f", action={b.get('action','?')}{ttf_str}"
             )
 
-    if analytics_summary_payload and analytics_summary_payload.get('total_readings'):
+    if analytics_summary_payload and (
+        analytics_summary_payload.get('total_readings') or analytics_summary_payload.get('reading_count')
+    ):
         sa    = analytics_summary_payload
-        total = sa['total_readings']
+        total = sa.get('total_readings') or sa.get('reading_count')
         lines += [
             "\n=== ANALYTICS SUMMARY — EXACT VALUES SHOWN ON ANALYTICS PAGE CHARTS ===",
             f"Bin: {sa.get('location', sa.get('sensor_id', '?'))}",
-            f"Average fill: {sa.get('avg_fill', '?')}%",
-            f"Average weight: {sa.get('avg_weight', '?')}g",
-            f"Peak usage hour: {sa.get('peak_usage_hour', '?')}:00",
+            f"Average fill: {_analytics_value(sa, 'avg_fill', 'average_fill')}%",
+            f"Average weight: {_analytics_value(sa, 'avg_weight', 'average_weight')}g",
+            f"Peak usage hour: {_format_hour(_analytics_value(sa, 'peak_usage_hour', 'peak_hour'))}",
             f"Total readings: {total}",
         ]
+        if sa.get('latest_24h_trend'):
+            lines.append(f"Last 24h trend: {sa['latest_24h_trend']}")
+        if sa.get('drop_count') is not None:
+            lines.append(f"Collection/compression drops detected: {sa['drop_count']}")
         dist = sa.get('state_distribution', {})
         if dist:
             lines.append("Status distribution (all readings):")
@@ -1081,6 +1087,112 @@ def _is_analytics_question(msg):
         'pattern', 'usage pattern', 'hourly', 'distribution',
     ])
 
+def is_trend_question(message):
+    m = (message or '').lower()
+    return any(kw in m for kw in [
+        'trend', 'graph', 'chart', 'line', 'last 24', 'what happened',
+        'pattern', 'increase', 'decrease', 'drop',
+    ])
+
+def _is_fleet_question(msg):
+    m = msg.lower()
+    return any(kw in m for kw in [
+        'all bins', 'fleet', 'every bin', 'overall', 'campus', 'across bins',
+        'which bins', 'bins need', 'need action',
+    ])
+
+def _analytics_value(payload, *keys):
+    for key in keys:
+        value = payload.get(key)
+        if value is not None:
+            return value
+    return None
+
+def _calculate_drop_events_from_timeseries(points):
+    if not points:
+        return []
+    ordered = sorted(points, key=lambda point: point.get('timestamp') or point.get('last_updated') or '')
+    drops = []
+    for previous, current in zip(ordered, ordered[1:]):
+        previous_fill = to_float(previous.get('fillLevel'))
+        current_fill = to_float(current.get('fillLevel'))
+        if previous_fill - current_fill >= 30:
+            drops.append({
+                'timestamp': current.get('timestamp') or current.get('last_updated'),
+                'from': previous_fill,
+                'to': current_fill,
+            })
+    return drops
+
+def _format_hour(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    try:
+        return f"{int(value):02d}:00"
+    except (TypeError, ValueError):
+        return str(value)
+
+def _format_drop_time(timestamp):
+    if not timestamp:
+        return None
+    try:
+        dt = parse_timestamp(timestamp)
+        return dt.strftime('%H:%M')
+    except Exception:
+        return str(timestamp)
+
+def trend_response_from_analytics(analytics_payload, selected_bin_name=None, selected_bin_id=None):
+    if not analytics_payload:
+        return ("I need the selected bin's analytics chart data to explain that trend. "
+                "Open a bin Analytics page and ask again.")
+
+    loc = (selected_bin_name or analytics_payload.get('location') or
+           analytics_payload.get('selected_bin_name') or selected_bin_id or 'the selected bin')
+    avg_fill = _analytics_value(analytics_payload, 'average_fill', 'avg_fill')
+    avg_weight = _analytics_value(analytics_payload, 'average_weight', 'avg_weight')
+    peak_hour = _format_hour(_analytics_value(analytics_payload, 'peak_hour', 'peak_usage_hour'))
+    reading_count = _analytics_value(analytics_payload, 'reading_count', 'total_readings', 'count') or 0
+    trend = analytics_payload.get('latest_24h_trend')
+    max_fill = analytics_payload.get('max_fill')
+    min_fill = analytics_payload.get('min_fill')
+
+    points = analytics_payload.get('time_series') or analytics_payload.get('readings') or []
+    drops = _calculate_drop_events_from_timeseries(points)
+    drop_count = analytics_payload.get('drop_count')
+    if drop_count is None:
+        drop_count = len(drops)
+    drop_time = _format_drop_time(drops[-1]['timestamp']) if drops else None
+
+    if not trend:
+        if drop_count:
+            trend = 'the fill level increased, then dropped sharply'
+        elif max_fill is not None and min_fill is not None and max_fill - min_fill >= 10:
+            trend = f'the fill level varied between {min_fill}% and {max_fill}%'
+        else:
+            trend = 'the fill level stayed mostly stable'
+
+    drop_sentence = ''
+    if drop_count:
+        when = f" around {drop_time}" if drop_time else ''
+        drop_sentence = f" It dropped sharply{when}, which usually indicates collection or compression."
+
+    peak_sentence = f" Peak usage is around {peak_hour}." if peak_hour else ''
+    avg_parts = []
+    if avg_fill is not None:
+        avg_parts.append(f"average fill is {avg_fill}%")
+    if avg_weight is not None:
+        avg_parts.append(f"average weight is {avg_weight}g")
+    avg_sentence = f" The {', and '.join(avg_parts)}" if avg_parts else ""
+    if avg_sentence:
+        avg_sentence += f" across {reading_count} readings."
+    elif reading_count:
+        avg_sentence = f" The chart uses {reading_count} readings."
+
+    return (f"The selected bin is **{loc}**. In the last 24 hours, {trend}."
+            f"{drop_sentence}{peak_sentence}{avg_sentence}")
+
 # ─── Rule-based responses ─────────────────────────────────
 
 def rule_based_response(message, current_bin, fleet_bins, analytics_summary_payload,
@@ -1121,7 +1233,7 @@ def rule_based_response(message, current_bin, fleet_bins, analytics_summary_payl
         # Check if analytics_summary has the distribution (use it — matches charts)
         if analytics_summary_payload and analytics_summary_payload.get('state_distribution'):
             dist  = analytics_summary_payload['state_distribution']
-            total = analytics_summary_payload.get('total_readings', sum(dist.values()))
+            total = analytics_summary_payload.get('total_readings') or analytics_summary_payload.get('reading_count') or sum(dist.values())
             loc   = analytics_summary_payload.get('location', target_loc or '?')
             asked = _detect_status(msg)
             if asked:
@@ -1172,16 +1284,17 @@ def rule_based_response(message, current_bin, fleet_bins, analytics_summary_payl
         if sa:
             loc = sa.get('location', current_bin.get('location') if current_bin else '?')
             if 'average' in msg or 'avg' in msg:
-                avg_fill   = sa.get('avg_fill', '?')
-                avg_weight = sa.get('avg_weight', '?')
-                total      = sa.get('total_readings') or sa.get('total_records') or '?'
+                avg_fill   = _analytics_value(sa, 'avg_fill', 'average_fill') or '?'
+                avg_weight = _analytics_value(sa, 'avg_weight', 'average_weight') or '?'
+                total      = sa.get('total_readings') or sa.get('reading_count') or sa.get('total_records') or '?'
                 return (f"Based on historical analytics for **{loc}**: "
                         f"average fill **{avg_fill}%**, average weight **{avg_weight}g** "
                         f"(across {total} readings).")
             if 'peak' in msg:
-                peak_hour = sa.get('peak_usage_hour') or (sa.get('peak_hour', {}) or {}).get('hour')
+                peak_value = sa.get('peak_usage_hour') or sa.get('peak_hour')
+                peak_hour = (peak_value or {}).get('hour') if isinstance(peak_value, dict) else peak_value
                 if peak_hour is not None:
-                    return (f"Based on historical analytics, **{loc}** peaks at **{int(peak_hour):02d}:00**.")
+                    return (f"Based on historical analytics, **{loc}** peaks at **{_format_hour(peak_hour)}**.")
         # Fallback for 'peak' without analytics
         bins_ttf = [b for b in fleet_bins if b.get('time_to_full') and b['time_to_full'] > 0]
         if bins_ttf and 'peak' in msg:
@@ -1193,14 +1306,16 @@ def rule_based_response(message, current_bin, fleet_bins, analytics_summary_payl
     if any(kw in msg for kw in ['24h', '24 hour', '24-hour', 'recent', 'today',
                                  'lately', 'last day', 'last 24']):
         # Analytics page: use analytics_summary state_distribution + avg
-        if analytics_summary_payload and analytics_summary_payload.get('total_readings'):
+        if analytics_summary_payload and (
+            analytics_summary_payload.get('total_readings') or analytics_summary_payload.get('reading_count')
+        ):
             sa   = analytics_summary_payload
             loc  = sa.get('location', '?')
             dist = sa.get('state_distribution', {})
-            total = sa.get('total_readings', 0)
+            total = sa.get('total_readings') or sa.get('reading_count') or 0
             most_common = max(dist, key=dist.get) if dist else 'Normal'
             return (f"Based on the selected bin's historical analytics for **{loc}**: "
-                    f"average fill **{sa.get('avg_fill','?')}%**, "
+                    f"average fill **{_analytics_value(sa, 'avg_fill', 'average_fill')}%**, "
                     f"most common status **{most_common}** "
                     f"(across {total} readings).")
         # Operations or fallback: use dataset 24h summary
@@ -1329,11 +1444,9 @@ def rule_based_response(message, current_bin, fleet_bins, analytics_summary_payl
                         f"fill {b['fillLevel']}%, weight {b['weight']}g. "
                         f"Action: {b['action']}.{ttf_str}")
 
-    # ── Fleet summary fallback ─────────────────────────────
-    total_bins = len(fleet_bins)
-    return (f"Monitoring {total_bins} bins. "
-            f"{len(urgent)} require immediate action, {len(soon)} need collection soon. "
-            f"Ask about specific bins, priorities, anomalies, or historical trends.")
+    # ── Clarify instead of guessing the wrong data source ──
+    return ("Do you want the selected bin's current status, its analytics trend, "
+            "or the whole fleet summary?")
 
 
 @app.route('/api/chat', methods=['POST'])
@@ -1346,6 +1459,7 @@ def chat():
     user_message          = (data.get('message') or '').strip()
     page                  = data.get('page', 'operations')
     selected_bin_id       = data.get('selected_bin')
+    selected_bin_name     = data.get('selected_bin_name')
     current_bin_payload   = data.get('current_selected_bin')   # exact live reading from dashboard
     fleet_payload         = data.get('fleet_summary')
     analytics_payload     = data.get('analytics_summary')
@@ -1393,9 +1507,37 @@ def chat():
     if bid_for_hist and bid_for_hist in BIN_METADATA:
         selected_bin_analytics = get_selected_bin_analytics(bid_for_hist)
 
+    source_used = 'not_selected'
+
     print(f"[chat] page={page} | bin={selected_bin_id} | "
           f"fleet_source={fleet_source} | current_source={current_source} | "
           f"has_analytics_payload={bool(analytics_payload)}", flush=True)
+
+    if _is_current_status_question(user_message) and current_bin:
+        source_used = 'current_selected_bin'
+        answer = rule_based_response(
+            user_message, current_bin, fleet_bins,
+            analytics_payload, selected_bin_id, selected_bin_analytics
+        )
+        print(f"[chat] source_used={source_used}", flush=True)
+        return jsonify({'response': answer, 'source': 'rule_based', 'source_used': source_used})
+
+    if page == 'analytics' and is_trend_question(user_message):
+        source_used = 'analytics_summary_trend'
+        answer = trend_response_from_analytics(
+            analytics_payload, selected_bin_name=selected_bin_name, selected_bin_id=selected_bin_id
+        )
+        print(f"[chat] source_used={source_used}", flush=True)
+        return jsonify({'response': answer, 'source': 'rule_based', 'source_used': source_used})
+
+    if _is_fleet_question(user_message):
+        source_used = 'fleet_summary'
+        answer = rule_based_response(
+            user_message, current_bin, fleet_bins,
+            analytics_payload, selected_bin_id, selected_bin_analytics
+        )
+        print(f"[chat] source_used={source_used}", flush=True)
+        return jsonify({'response': answer, 'source': 'rule_based', 'source_used': source_used})
 
     context = build_chat_context(
         current_bin, fleet_bins, analytics_payload, selected_bin_analytics
@@ -1423,7 +1565,9 @@ def chat():
             )
             completion.raise_for_status()
             answer = completion.json()['choices'][0]['message']['content'].strip()
-            return jsonify({'response': answer, 'source': 'openai'})
+            source_used = 'openai_context'
+            print(f"[chat] source_used={source_used}", flush=True)
+            return jsonify({'response': answer, 'source': 'openai', 'source_used': source_used})
         except Exception as exc:
             print(f"[chat] OpenAI error, falling back to rule-based: {exc}")
 
@@ -1431,7 +1575,9 @@ def chat():
         user_message, current_bin, fleet_bins,
         analytics_payload, selected_bin_id, selected_bin_analytics
     )
-    return jsonify({'response': answer, 'source': 'rule_based'})
+    source_used = 'rule_based'
+    print(f"[chat] source_used={source_used}", flush=True)
+    return jsonify({'response': answer, 'source': 'rule_based', 'source_used': source_used})
 
 # ════════════════════════════════════════════════════════════
 # RUN

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { api, fmt } from '../lib/api.js'
 import { useChatContext } from '../lib/ChatContext.jsx'
@@ -81,10 +81,6 @@ export default function Analytics() {
       if (options.cancelled) return
       cache.current.summary[id] = { data, loadedAt: Date.now() }
       setSummary(data)
-      updateChatContext({
-        analytics_summary: data,
-        selected_bin_name: data.location || id,
-      })
     } catch (error) {
       console.error('Analytics summary failed', error)
       if (cached) {
@@ -144,8 +140,19 @@ export default function Analytics() {
   }
 
   const selectedBin = bins.find(bin => bin.sensor_id === selectedId)
-  const readings = timeseries?.readings || []
+  const readings = useMemo(() => timeseries?.readings || [], [timeseries])
   const hasSummary = summary && summary.total_readings !== 0
+
+  useEffect(() => {
+    if (!selectedId || !summary) return
+    const name = selectedBin?.location || summary.location || selectedId
+    updateChatContext({
+      page: 'analytics',
+      selected_bin: selectedId,
+      selected_bin_name: name,
+      analytics_summary: buildChatAnalyticsSummary(summary, readings),
+    })
+  }, [selectedId, selectedBin, summary, readings, updateChatContext])
 
   return (
     <div>
@@ -383,4 +390,62 @@ function InlineError({ message, onRetry }) {
       <button className="btn-ghost btn" onClick={onRetry} style={{ padding: '7px 10px' }}>Retry</button>
     </div>
   )
+}
+
+function buildChatAnalyticsSummary(summary, readings = []) {
+  const sorted = [...readings].sort((a, b) => {
+    const at = new Date(a.last_updated || a.timestamp || 0).getTime()
+    const bt = new Date(b.last_updated || b.timestamp || 0).getTime()
+    return at - bt
+  })
+  const fills = sorted
+    .map(reading => Number(reading.fillLevel))
+    .filter(fill => Number.isFinite(fill))
+
+  return {
+    sensor_id: summary.sensor_id,
+    location: summary.location,
+    average_fill: summary.avg_fill,
+    average_weight: summary.avg_weight,
+    peak_hour: summary.peak_usage_hour == null ? null : `${summary.peak_usage_hour}:00`,
+    reading_count: sorted.length || summary.total_readings || 0,
+    latest_24h_trend: describeLatest24hTrend(sorted),
+    drop_count: countDrops(sorted),
+    max_fill: fills.length ? Math.max(...fills) : null,
+    min_fill: fills.length ? Math.min(...fills) : null,
+    state_distribution: summary.state_distribution || {},
+    time_series: sorted.map(reading => ({
+      timestamp: reading.last_updated || reading.timestamp,
+      fillLevel: reading.fillLevel,
+      weight: reading.weight,
+      status: reading.status
+    }))
+  }
+}
+
+function countDrops(readings = []) {
+  return readings.reduce((count, reading, index) => {
+    if (index === 0) return count
+    const previous = Number(readings[index - 1].fillLevel)
+    const current = Number(reading.fillLevel)
+    return Number.isFinite(previous) && Number.isFinite(current) && previous - current >= 30
+      ? count + 1
+      : count
+  }, 0)
+}
+
+function describeLatest24hTrend(readings = []) {
+  if (readings.length < 2) return 'Not enough readings to identify a 24-hour pattern.'
+  const first = Number(readings[0].fillLevel)
+  const last = Number(readings[readings.length - 1].fillLevel)
+  const drops = countDrops(readings)
+  if (!Number.isFinite(first) || !Number.isFinite(last)) {
+    return 'The chart has readings, but the fill pattern is incomplete.'
+  }
+  if (drops > 0) {
+    return 'Fill increased during the period and dropped sharply at least once, which usually indicates collection or compression.'
+  }
+  if (last > first + 10) return 'Fill increased steadily across the last 24 hours.'
+  if (last < first - 10) return 'Fill decreased across the last 24 hours.'
+  return 'Fill stayed mostly stable across the last 24 hours.'
 }
