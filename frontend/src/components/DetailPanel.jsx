@@ -66,6 +66,28 @@ export default function DetailPanel({ bin, liveStatus, onDispatch, onAnalytics }
       </div>
 
       <div style={{
+        marginTop: 12,
+        padding: 10,
+        display: 'flex',
+        gap: 10,
+        flexWrap: 'wrap',
+        background: 'var(--bg-soft)',
+        border: '1px solid var(--border)',
+        borderRadius: 10
+      }}>
+        <button
+          className="btn"
+          onClick={onDispatch}
+          title="Send a dispatch SMS for this bin"
+        >
+          Send SMS
+        </button>
+        <button className="btn-ghost btn" onClick={onAnalytics}>
+          View Analytics →
+        </button>
+      </div>
+
+      <div style={{
         marginTop: 10,
         paddingTop: 10,
         borderTop: '1px solid var(--border)',
@@ -89,30 +111,6 @@ export default function DetailPanel({ bin, liveStatus, onDispatch, onAnalytics }
       }}>
         <Metric label="Fill" value={fmt.fill(bin.fillLevel)} />
         <Metric label="Weight" value={fmt.weight(bin.weight)} />
-      </div>
-
-      <div style={{
-        position: 'sticky',
-        bottom: 0,
-        marginTop: 12,
-        paddingTop: 10,
-        paddingBottom: 4,
-        display: 'flex',
-        gap: 10,
-        flexWrap: 'wrap',
-        background: 'var(--bg-panel)',
-        borderTop: '1px solid var(--border)'
-      }}>
-        <button
-          className="btn"
-          onClick={onDispatch}
-          title="Send a dispatch SMS for this bin"
-        >
-          Send SMS
-        </button>
-        <button className="btn-ghost btn" onClick={onAnalytics}>
-          View Analytics →
-        </button>
       </div>
 
       <div style={{ marginTop: 8, fontSize: 10.5, color: 'var(--ink-mute)', fontFamily: 'var(--font-mono)' }}>
