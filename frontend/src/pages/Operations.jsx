@@ -123,31 +123,12 @@ export default function Operations() {
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
       {/* HERO STRIP */}
       <section style={{
-        padding: '22px 32px 18px',
+        padding: '22px 32px',
         borderTop: '1px solid rgba(20, 184, 166, 0.18)',
         borderBottom: '1px solid rgba(20, 184, 166, 0.24)',
         background: 'linear-gradient(180deg, rgba(204, 251, 241, 0.42), var(--bg) 72%)'
       }}>
         <div className="kicker">Operations Overview · {fleet?.total_bins ?? '—'} Bins Monitored</div>
-        <h1 className="font-serif"
-            style={{
-              fontSize: 'clamp(30px, 3.6vw, 42px)',
-              fontWeight: 800,
-              letterSpacing: '-0.035em',
-              marginTop: 8,
-              color: 'var(--navy)'
-            }}>
-          {fleet?.requires_action > 0 ? (
-            <>
-              <em style={{ fontStyle: 'normal', color: 'var(--accent)' }}>{fleet.requires_action}</em>
-              {' '}{fleet.requires_action === 1 ? 'bin requires' : 'bins require'} action now
-            </>
-          ) : fleet ? (
-            <>No urgent collection needed right now</>
-          ) : (
-            <span className="skeleton" style={{ width: 400, height: 40 }} />
-          )}
-        </h1>
         {fleet && (
           <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: 'repeat(4, minmax(120px, 1fr))', gap: 12 }}>
             <FleetStat label="Total bins" caption="Across campus" value={fleet.total_bins || 0} tone="navy" />
@@ -160,7 +141,7 @@ export default function Operations() {
 
       {/* MAIN GRID */}
       <section style={{
-        height: 'clamp(500px, calc(100vh - 245px), 585px)',
+        height: 'clamp(560px, calc(100vh - 190px), 680px)',
         display: 'flex',
         alignItems: 'stretch',
         gap: 16,

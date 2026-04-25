@@ -12,8 +12,6 @@ export default function DetailPanel({ bin, liveStatus, onDispatch, onAnalytics }
   const status = decision.status(bin)
   const action = decision.action(bin)
   const timeToFull = decision.timeToFull(bin)
-  const priority = decision.priority(bin)
-  const requiresDispatch = priority >= 3 || action === 'Delay collection / compress waste'
   const isSimulated = bin.is_simulated || bin.data_source === 'historical_simulated'
   const isLive = !isSimulated
   const readingAge = getReadingAgeSeconds(bin.last_updated)
@@ -30,7 +28,7 @@ export default function DetailPanel({ bin, liveStatus, onDispatch, onAnalytics }
       display: 'flex',
       flexDirection: 'column',
       background: 'var(--bg-panel)',
-      overflow: 'hidden'
+      overflowY: 'auto'
     }}>
       <div>
         <div className="kicker">
@@ -94,20 +92,23 @@ export default function DetailPanel({ bin, liveStatus, onDispatch, onAnalytics }
       </div>
 
       <div style={{
-        marginTop: 'auto',
+        position: 'sticky',
+        bottom: 0,
+        marginTop: 12,
         paddingTop: 10,
-        paddingBottom: 2,
+        paddingBottom: 4,
         display: 'flex',
         gap: 10,
-        flexWrap: 'wrap'
+        flexWrap: 'wrap',
+        background: 'var(--bg-panel)',
+        borderTop: '1px solid var(--border)'
       }}>
         <button
           className="btn"
-          disabled={!requiresDispatch}
           onClick={onDispatch}
-          title={requiresDispatch ? '' : 'No dispatch required for this bin'}
+          title="Send a dispatch SMS for this bin"
         >
-          {buttonLabel(action)}
+          Send SMS
         </button>
         <button className="btn-ghost btn" onClick={onAnalytics}>
           View Analytics →
@@ -162,14 +163,6 @@ function statusTone(status) {
     Empty: 'var(--state-empty)',
     Anomaly: 'var(--state-anomaly)'
   }[status] || 'var(--ink)'
-}
-
-function buttonLabel(action) {
-  if (action === 'Collect immediately') return 'Dispatch Collection'
-  if (action === 'Collect within 1 hour') return 'Schedule Collection'
-  if (action === 'Inspect bin / sensor') return 'Dispatch Inspection'
-  if (action === 'Delay collection / compress waste') return 'Dispatch Compression'
-  return 'No Action Needed'
 }
 
 function getReadingAgeSeconds(iso) {
