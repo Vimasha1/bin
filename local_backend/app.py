@@ -146,6 +146,13 @@ BIN_STATES = ['empty', 'half_filled', 'normal', 'loosely_filled', 'densely_fille
 ANALYTICS_CACHE = {}
 ANALYTICS_CACHE_SECONDS = 60
 MAX_TIMESERIES_POINTS = 300
+DEBUG_PREDICTIONS = os.environ.get('SMARTBIN_DEBUG_PREDICTIONS', '').lower() in ('1', 'true', 'yes')
+
+# Safety thresholds for physically inconsistent model combinations:
+# high fill volume with very low mass means loose/light waste, not urgent compacted fullness.
+LIGHT_WASTE_MIN_FILL = 60
+LIGHT_WASTE_MAX_WEIGHT = 200
+LIGHT_WASTE_MAX_DENSITY = 3.0
 
 # ════════════════════════════════════════════════════════════
 # CSV CACHE — load all sim bin datasets into memory
@@ -235,9 +242,22 @@ def clean_time_to_full(value):
     return round(value, 1)
 
 
-def generate_decision(fillLevel, weight, bin_state, time_to_full):
+def is_light_waste_physical_guard(fillLevel, weight, density=None):
+    if density is None:
+        density = weight / fillLevel if fillLevel > 0 else 0.0
+    return (
+        fillLevel >= LIGHT_WASTE_MIN_FILL and
+        (weight <= LIGHT_WASTE_MAX_WEIGHT or density <= LIGHT_WASTE_MAX_DENSITY)
+    )
+
+
+def generate_decision(fillLevel, weight, bin_state, time_to_full, density=None):
     """Convert internal model outputs into supervisor-facing decisions."""
     cleaned_time = clean_time_to_full(time_to_full)
+    loose_waste = (
+        bin_state == 'loosely_filled' or
+        is_light_waste_physical_guard(fillLevel, weight, density)
+    )
 
     if fillLevel <= 10:
         return {
@@ -255,6 +275,14 @@ def generate_decision(fillLevel, weight, bin_state, time_to_full):
             'time_to_full': None
         }
 
+    if loose_waste:
+        return {
+            'status': 'Light Waste',
+            'action': 'Delay collection / compress waste',
+            'priority': 1,
+            'time_to_full': None
+        }
+
     if bin_state == 'densely_filled':
         return {
             'status': 'Full',
@@ -268,14 +296,6 @@ def generate_decision(fillLevel, weight, bin_state, time_to_full):
             'status': 'Almost Full',
             'action': 'Collect within 1 hour',
             'priority': 3,
-            'time_to_full': cleaned_time
-        }
-
-    if bin_state == 'loosely_filled':
-        return {
-            'status': 'Light Waste',
-            'action': 'Delay collection / compress waste',
-            'priority': 1,
             'time_to_full': cleaned_time
         }
 
@@ -321,8 +341,20 @@ def enrich_reading(reading, bin_id, include_internal=False):
         public_fill,
         weight,
         predicted_bin_state,
-        predicted_time_to_full
+        predicted_time_to_full,
+        density
     )
+
+    if DEBUG_PREDICTIONS:
+        print(
+            "[prediction_debug] "
+            f"bin={bin_id} raw_fillLevel={reading.get('fillLevel')} raw_weight={reading.get('weight')} "
+            f"densityIndex={round(density, 4)} classifier_output={predicted_bin_state} "
+            f"regressor_output={round(float(predicted_time_to_full), 4) if predicted_time_to_full is not None else None} "
+            f"public_status={decision['status']} public_action={decision['action']} "
+            f"public_time_to_full={decision['time_to_full']}",
+            flush=True
+        )
 
     meta = BIN_METADATA.get(bin_id, {})
 
